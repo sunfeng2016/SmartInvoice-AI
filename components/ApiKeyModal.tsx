@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Key, Eye, EyeOff, Save, ShieldCheck, X, Settings, Globe, Cpu } from 'lucide-react';
+import { Key, Eye, EyeOff, Save, ShieldCheck, X, Settings, Globe, Cpu, ExternalLink } from 'lucide-react';
 
 interface ApiKeyModalProps {
   isOpen: boolean;
@@ -74,9 +74,21 @@ const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
 
             {/* API Key Input */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                API Key
-              </label>
+              <div className="flex justify-between items-center mb-1">
+                <label className="block text-sm font-medium text-gray-700">
+                  API Key
+                </label>
+                <a 
+                  href="https://aistudio.google.com/app/apikey" 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="text-xs text-blue-600 hover:text-blue-800 hover:underline flex items-center transition-colors"
+                  title="点击前往 Google AI Studio 获取"
+                >
+                  获取 Google API Key
+                  <ExternalLink className="w-3 h-3 ml-1" />
+                </a>
+              </div>
               <div className="relative">
                 <input
                   type={showKey ? "text" : "password"}

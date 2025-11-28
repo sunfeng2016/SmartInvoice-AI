@@ -5,7 +5,13 @@ import { InvoiceData } from "../types";
 // --- Configuration Helper ---
 
 const getCleanConfig = (apiKey: string, baseUrl?: string) => {
-  let key = apiKey || process.env.API_KEY || '';
+  let key = apiKey || '';
+  
+  // Also check process.env.API_KEY for legacy support if defined
+  if (!key && typeof process !== 'undefined' && process.env?.API_KEY) {
+    key = process.env.API_KEY;
+  }
+  
   if (!key) {
     throw new Error("API Key is missing. Please configure it in settings.");
   }
@@ -13,42 +19,57 @@ const getCleanConfig = (apiKey: string, baseUrl?: string) => {
   key = key.trim().replace(/[^\x00-\x7F]/g, "");
 
   let url = baseUrl ? baseUrl.trim() : '';
-  if (url.endsWith('/')) {
-    url = url.slice(0, -1);
-  }
-
+  
   return { key, url };
 };
 
 // --- PROMPT DEFINITION ---
 const INVOICE_PROMPT = `
 分析这张单据图片或PDF，提取报销数据。请使用中文进行分析和提取。
-请严格输出纯 JSON 格式，不要包含 Markdown 代码块标记（如 \`\`\`json）。
+请严格输出纯 JSON 格式，不要包含 Markdown 代码块标记。
 
-提取以下字段:
-1. invoiceNumber: 发票号码。如果是机票/火车票，使用票号。如果没有，返回 'N/A'。
-2. amount: 总金额（数字）。
-3. currency: 币种，例如 CNY, USD。
-4. date: YYYY-MM-DD 格式。
-5. type: 严格从以下选项中选择 ['行程单', '出差审批单', '结账单', '火车票或飞机票', '打车票', '住宿费', '退票费', '其他']。
-   - 滴滴/高德/Uber等网约车的行程详情单、电子行程单 -> '行程单'
-   - 公司内部的出差申请单、审批单 -> '出差审批单'
-   - 酒店/餐厅的预结单、结账单（通常无税务章，仅作为明细） -> '结账单'
-   - 飞机行程单（作为发票报销）、火车票、高铁票 -> '火车票或飞机票'
-   - 出租车发票、网约车电子发票、过路费发票 -> '打车票'
-   - 酒店住宿专用发票 -> '住宿费'
-   - 退票手续费收据 -> '退票费'
-   - 地铁票、定额发票、办公用品、餐饮发票等 -> '其他'
-6. city: 城市或地点信息。
-   - 格式要求：省份+城市（如：江苏省南京市, 辽宁省大连市, 北京市北京城区）。
-   - 如果是火车票/机票/行程单，提取【出发地】城市。
-   - 如果是酒店/餐饮发票，提取商家所在城市。
-   - 如果无法确定，返回 '未知'。
-7. remarks: 内容摘要 (例如 "酒店住宿", "商务打车")，请使用中文。
-8. isReimbursable (boolean): 
-   - 设为 TRUE: 仅当文件是正式的税务发票 (Fapiao)、航空运输电子客票行程单、或正式的出租车/网约车发票。
-   - 设为 FALSE: 如果 type 是 '行程单'、'出差审批单' 或 '结账单'。如果文件是 "支付截图"、"订单确认单" 或其他非税务发票的收据。
-   - 关键: 酒店的 "结账单" 通常有红章，但它不是发票，必须返回 FALSE。网约车 "行程单" 也必须返回 FALSE。
+**任务关键指令**:
+你是一个专业的财务审核机器人。你的核心任务是准确区分发票类型并提取城市。
+
+**字段提取规则**:
+
+1. **type** (单据类型): 严格从以下列表中选择一项。
+   - **['打车票']**: 
+     - 包含: 出租车发票、过路费发票。
+     - ***强制规则***: 所有网约车平台（如 **阳光出行、滴滴出行、T3出行、曹操出行、高德打车**）开具的**电子发票** (通常标题有"发票"二字，有红色税务章)，必须归类为 '打车票'。
+     - *注意*: 不要因为看到是 PDF 或电子票就归类为 '火车票或飞机票'。网约车发票是 '打车票'。
+   - **['火车票或飞机票']**: 
+     - 包含: 飞机行程单 (蓝色/绿色长条票)、火车票 (红色/蓝色票)、航空运输电子客票行程单。
+     - *注意*: 只有真正的航空/铁路票据才属此类。
+   - **['住宿费']**: 酒店住宿专用发票、代订房费发票。
+   - **['行程单']**: 
+     - 包含: 网约车 APP 内截图的行程详情、无国税局监制章的"行程单"、无金额的订单确认页。
+     - *注意*: 只要没有红色发票专用章，通常就是 '行程单' (不可报销)。
+   - **['出差审批单']**: 公司内部审批流程单据。
+   - **['结账单']**: 酒店/餐厅的"结账单"、"预结单" (无发票章)。
+   - **['退票费']**: 退票手续费收据。
+   - **['其他']**: 地铁票、公交票、定额发票、餐饮、办公用品。
+
+2. **city** (城市): 格式为 "省份+城市" (如 "北京市北京城区", "江苏省南京市")。
+   - **网约车/出租车规则 (最高优先级)**: 
+     - 必须优先检查 **【销售方名称】** 或 **【发票章】** 中的地名。
+     - 示例: 销售方是 "北京阳光出行科技..." -> 提取 "北京市北京城区"。
+     - 示例: 销售方是 "南京滴滴..." -> 提取 "江苏省南京市"。
+     - 示例: 销售方是 "江苏东台..." -> 提取 "江苏省东台市"。
+     - 只有在销售方不包含地名时，才尝试查找上下车地点。
+   - **火车/飞机**: 提取【出发地】城市。
+   - **住宿/其他**: 提取服务发生地或商户所在地。
+
+3. **invoiceNumber**: 发票号码/票号。无则返回 'N/A'。
+4. **amount**: 总金额 (Number)。
+5. **currency**: 币种 (CNY/USD)。
+6. **date**: YYYY-MM-DD。
+7. **remarks**: 中文摘要 (如 "商务出行", "酒店住宿")。
+8. **isReimbursable** (Boolean):
+   - TRUE: 正式发票 (含网约车电子发票)、航空行程单、火车票。
+   - FALSE: 行程单、结账单、审批单、无章收据。
+
+请仔细检查图片内容，特别是针对 "阳光出行" 发票，请务必将其识别为 "打车票" 并从销售方提取城市。
 `;
 
 // --- STRATEGY 1: OpenAI SDK (For 'sk-' keys / Proxies) ---
@@ -290,14 +311,18 @@ export const extractInvoiceData = async (
   const { key, url } = getCleanConfig(apiKey, baseUrl);
 
   // Retry Wrapper
-  const retryOperation = async <T>(operation: () => Promise<T>, maxRetries = 3, initialDelay = 2000): Promise<T> => {
+  const retryOperation = async <T>(operation: () => Promise<T>, maxRetries = 7, initialDelay = 10000): Promise<T> => {
     for (let i = 0; i < maxRetries; i++) {
       try {
         return await operation();
       } catch (error: any) {
         const msg = error?.message || '';
         // Check for rate limits
-        const isRateLimit = msg.includes('429') || msg.includes('quota') || msg.includes('Too Many Requests');
+        const isRateLimit = 
+          msg.includes('429') || 
+          msg.includes('quota') || 
+          msg.includes('Too Many Requests') ||
+          error?.status === 429;
         
         // Check for 404 (Model not found / Path error)
         if (msg.includes('404') || msg.includes('Not Found')) {
