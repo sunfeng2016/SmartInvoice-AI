@@ -107,9 +107,14 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ files, onRemove, onExport }) 
                   <td className="px-4 py-3 text-gray-600">{file.data?.date || '-'}</td>
                   <td className="px-4 py-3">
                      {file.data?.type ? (
-                       <span className={`px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${getTypeStyle(file.data.type)}`}>
-                         {file.data.type}
-                       </span>
+                       <div className="flex items-center gap-1">
+                         <span className={`px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${getTypeStyle(file.data.type)}`}>
+                           {file.data.type}
+                         </span>
+                         {isNotReimbursable && (
+                           <span className="text-xs text-orange-600 font-bold">(非发票)</span>
+                         )}
+                       </div>
                      ) : '-'}
                   </td>
                   <td className="px-4 py-3 text-gray-600 truncate max-w-[150px]">{file.data?.city || '-'}</td>
