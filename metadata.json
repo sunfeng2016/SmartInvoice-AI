@@ -1,0 +1,5 @@
+{
+  "name": "SmartInvoice AI",
+  "description": "A serverless invoice processing tool. Upload PDFs or images of invoices, receipts, and travel orders. The app uses Gemini 2.5 Flash to extract structured data (Number, Amount, Date) for Excel/CSV export and provides an AI Chatbot to answer questions about your documents.",
+  "requestFramePermissions": []
+}
