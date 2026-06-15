@@ -54,10 +54,15 @@ const ChatAssistant: React.FC<ChatAssistantProps> = ({ files, apiKey, baseUrl, m
     try {
       // Filter only successfully processed files or raw files pending process
       // We pass the base64 data to the chat context
-      const validFiles = files.filter(f => f.status === 'success' || f.base64).map(f => ({
-        base64: f.base64,
-        mimeType: f.mimeType
-      }));
+      const validFiles = files
+        .filter(f => f.status === 'success' || f.base64)
+        .flatMap(f => {
+          if (f.renderedPages && f.renderedPages.length > 0) {
+            return f.renderedPages;
+          }
+          return [{ base64: f.base64, mimeType: f.mimeType }];
+        })
+        .filter(f => f.base64);
 
       // Convert UI messages to API history format
       const history = messages.map(m => ({

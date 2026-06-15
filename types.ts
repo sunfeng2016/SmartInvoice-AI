@@ -5,6 +5,7 @@ export interface ProcessedFile {
   type: string;
   base64: string; // Base64 data without prefix for API, or with prefix for preview if needed
   mimeType: string;
+  renderedPages?: Array<{ base64: string; mimeType: string }>;
   status: 'pending' | 'processing' | 'success' | 'error';
   data?: InvoiceData;
   errorMessage?: string;

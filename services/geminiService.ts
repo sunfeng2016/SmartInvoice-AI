@@ -2,6 +2,56 @@ import { GoogleGenAI, Type } from "@google/genai";
 import OpenAI from "openai";
 import { InvoiceData } from "../types";
 
+type DocumentPart = { base64: string; mimeType: string };
+
+const toDocumentParts = (input: string | DocumentPart[], mimeType: string): DocumentPart[] => {
+  return Array.isArray(input) ? input : [{ base64: input, mimeType }];
+};
+
+const summarizeUnknownResponse = (response: unknown): string => {
+  try {
+    return JSON.stringify(response).slice(0, 800);
+  } catch {
+    return String(response);
+  }
+};
+
+const parseInvoiceJson = (content: string): InvoiceData => {
+  const fence = String.fromCharCode(96, 96, 96);
+  const cleanContent = content.replace(fence + 'json', '').replace(fence, '').trim();
+  return JSON.parse(cleanContent) as InvoiceData;
+};
+
+const normalizeOpenAIBaseUrl = (baseUrl: string): string | undefined => {
+  const trimmed = baseUrl.trim().replace(/\/+$/, '');
+  if (!trimmed) return undefined;
+  if (/\/v\d+(?:\/.*)?$/.test(trimmed)) return trimmed;
+  return trimmed + '/v1';
+};
+
+const assertNotHtmlResponse = (content: string, baseUrl: string) => {
+  if (/^\s*<!doctype html/i.test(content) || /^\s*<html/i.test(content)) {
+    throw new Error(
+      'API 返回了网页 HTML，而不是模型 JSON。请检查 Base URL，应填写 OpenAI-compatible API 地址；系统会自动补 /v1。当前实际请求地址: ' +
+      (normalizeOpenAIBaseUrl(baseUrl) || '默认 OpenAI 地址')
+    );
+  }
+};
+
+const getGoogleText = (response: any): string => {
+  const parts = response?.candidates?.[0]?.content?.parts;
+  const text = Array.isArray(parts)
+    ? parts.map((part: any) => part?.text || '').join('').trim()
+    : '';
+
+  if (text) return text;
+
+  const blockReason = response?.promptFeedback?.blockReason;
+  const finishReason = response?.candidates?.[0]?.finishReason;
+  const reason = blockReason || finishReason || 'empty response';
+  throw new Error('Gemini 未返回可解析文本: ' + reason + '. 返回摘要: ' + summarizeUnknownResponse(response));
+};
+
 // --- Configuration Helper ---
 
 const getCleanConfig = (apiKey: string, baseUrl?: string) => {
@@ -85,22 +135,32 @@ const INVOICE_PROMPT = `
 // --- STRATEGY 1: OpenAI SDK (For 'sk-' keys / Proxies) ---
 
 const extractWithOpenAI = async (
-  base64: string,
-  mimeType: string,
+  documentParts: DocumentPart[],
   apiKey: string,
   baseUrl: string,
   modelName: string
 ): Promise<InvoiceData> => {
-  // Default to a model that supports vision if user didn't specify properly
-  // But usually proxies map 'gpt-4-vision' or 'gemini-pro' to the right backend
-  const targetModel = modelName || "gpt-4-turbo"; 
-  
-  // For OpenAI SDK, we typically keep the /v1 if the proxy requires it.
-  // If user entered 'https://api.laozhang.ai/v1', we use it as is.
+  const targetModel = modelName || "gpt-4-turbo";
+
+  const unsupportedPart = documentParts.find(part => !part.mimeType.startsWith('image/'));
+  if (unsupportedPart) {
+    throw new Error("OpenAI 兼容接口不支持直接上传 PDF，请先将 PDF 转为图片后再解析。");
+  }
+
   const client = new OpenAI({
     apiKey: apiKey,
-    baseURL: baseUrl || undefined,
-    dangerouslyAllowBrowser: true // Required for client-side usage
+    baseURL: normalizeOpenAIBaseUrl(baseUrl),
+    dangerouslyAllowBrowser: true
+  });
+
+  const content: any[] = [{ type: "text", text: INVOICE_PROMPT }];
+  documentParts.forEach(part => {
+    content.push({
+      type: "image_url",
+      image_url: {
+        url: "data:" + part.mimeType + ";base64," + part.base64,
+      },
+    });
   });
 
   const response = await client.chat.completions.create({
@@ -108,32 +168,26 @@ const extractWithOpenAI = async (
     messages: [
       {
         role: "user",
-        content: [
-          { type: "text", text: INVOICE_PROMPT },
-          {
-            type: "image_url",
-            image_url: {
-              url: `data:${mimeType};base64,${base64}`,
-            },
-          },
-        ],
+        content,
       },
     ],
-    // Force JSON object if model supports it, otherwise prompt relies on text
-    response_format: { type: "json_object" }, 
-    temperature: 0.1, // Low temperature for deterministic extraction
+    response_format: { type: "json_object" },
+    temperature: 0.1,
   });
 
-  const content = response.choices[0].message.content;
-  if (!content) throw new Error("OpenAI 返回内容为空");
+  const contentText = response?.choices?.[0]?.message?.content;
+  if (!contentText) {
+    const summary = summarizeUnknownResponse(response);
+    assertNotHtmlResponse(summary, baseUrl);
+    throw new Error('OpenAI 兼容接口未返回 choices[0].message.content。返回摘要: ' + summary);
+  }
+  assertNotHtmlResponse(contentText, baseUrl);
 
   try {
-    return JSON.parse(content) as InvoiceData;
+    return parseInvoiceJson(contentText);
   } catch (e) {
-    console.error("JSON Parse Error", content);
-    // Try to clean markdown
-    const cleanContent = content.replace(/```json/g, '').replace(/```/g, '').trim();
-    return JSON.parse(cleanContent) as InvoiceData;
+    console.error("JSON Parse Error", contentText);
+    throw new Error('模型返回的内容不是合法 JSON: ' + contentText.slice(0, 500));
   }
 };
 
@@ -149,7 +203,7 @@ const chatWithOpenAIStream = async (
   
   const client = new OpenAI({
     apiKey: apiKey,
-    baseURL: baseUrl || undefined,
+    baseURL: normalizeOpenAIBaseUrl(baseUrl),
     dangerouslyAllowBrowser: true
   });
 
@@ -205,33 +259,27 @@ const chatWithOpenAIStream = async (
 // --- STRATEGY 2: Google GenAI SDK (For Native Keys) ---
 
 const extractWithGoogle = async (
-  base64: string,
-  mimeType: string,
+  documentParts: DocumentPart[],
   apiKey: string,
   baseUrl: string,
   modelName: string
 ): Promise<InvoiceData> => {
-  // NOTE: @google/genai SDK does not support baseUrl in constructor options for custom endpoints.
-  // Custom baseUrl is ignored here. Use OpenAI strategy (sk- key) for proxies.
-  const ai = new GoogleGenAI({ 
-    apiKey, 
+  const ai = new GoogleGenAI({
+    apiKey,
   });
-  
+
   const targetModel = modelName || "gemini-2.5-flash";
+  const parts: any[] = documentParts.map(part => ({
+    inlineData: {
+      mimeType: part.mimeType,
+      data: part.base64,
+    },
+  }));
+  parts.push({ text: INVOICE_PROMPT });
 
   const response = await ai.models.generateContent({
     model: targetModel,
-    contents: {
-      parts: [
-        {
-          inlineData: {
-            mimeType: mimeType,
-            data: base64,
-          },
-        },
-        { text: INVOICE_PROMPT },
-      ],
-    },
+    contents: [{ role: 'user', parts }],
     config: {
       responseMimeType: "application/json",
       responseSchema: {
@@ -251,9 +299,13 @@ const extractWithGoogle = async (
     },
   });
 
-  const text = response.text;
-  if (!text) throw new Error("AI 未返回数据");
-  return JSON.parse(text) as InvoiceData;
+  const text = getGoogleText(response);
+  try {
+    return parseInvoiceJson(text);
+  } catch (e) {
+    console.error("JSON Parse Error", text);
+    throw new Error('模型返回的内容不是合法 JSON: ' + text.slice(0, 500));
+  }
 };
 
 const chatWithGoogleStream = async (
@@ -312,7 +364,7 @@ const chatWithGoogleStream = async (
 // --- EXPORTED FUNCTIONS WITH ROUTING LOGIC ---
 
 export const extractInvoiceData = async (
-  fileBase64: string,
+  fileBase64: string | DocumentPart[],
   mimeType: string,
   apiKey: string,
   baseUrl?: string,
@@ -351,12 +403,14 @@ export const extractInvoiceData = async (
     throw new Error("Max retries exceeded");
   };
 
+  const documentParts = toDocumentParts(fileBase64, mimeType);
+
   return retryOperation(() => {
     // ROUTING LOGIC: 'sk-' means OpenAI-compatible Proxy
     if (key.startsWith('sk-')) {
-      return extractWithOpenAI(fileBase64, mimeType, key, url, modelName);
+      return extractWithOpenAI(documentParts, key, url, modelName);
     } else {
-      return extractWithGoogle(fileBase64, mimeType, key, url, modelName);
+      return extractWithGoogle(documentParts, key, url, modelName);
     }
   });
 };

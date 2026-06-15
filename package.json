@@ -12,6 +12,7 @@
     "@google/genai": "latest",
     "lucide-react": "^0.344.0",
     "openai": "^4.28.0",
+    "pdfjs-dist": "^6.0.227",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "xlsx": "^0.18.5"

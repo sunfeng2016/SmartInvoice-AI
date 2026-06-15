@@ -6,6 +6,7 @@ import ApiKeyModal from './components/ApiKeyModal';
 import { ProcessedFile } from './types';
 import { extractInvoiceData } from './services/geminiService';
 import { exportToExcel } from './utils/csvHelper';
+import { renderPdfToPngPages } from './utils/pdfHelper';
 import { FileSpreadsheet, Settings } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -51,6 +52,15 @@ const App: React.FC = () => {
     }
   };
 
+  const inferMimeType = (file: File): string => {
+    if (file.type) return file.type;
+    return file.name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream';
+  };
+
+  const isPdfFile = (file: File): boolean => {
+    return inferMimeType(file) === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+  };
+
   // Helper to convert file to Base64
   const fileToBase64 = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -80,10 +90,10 @@ const App: React.FC = () => {
     const newProcessedFiles: ProcessedFile[] = selectedFiles.map(file => ({
       id: Math.random().toString(36).substring(7),
       name: file.name,
-      type: file.type,
+      type: inferMimeType(file),
       status: 'processing',
       base64: '', // Placeholder
-      mimeType: file.type
+      mimeType: inferMimeType(file)
     }));
 
     // Add to state immediately to show loaders
@@ -105,12 +115,16 @@ const App: React.FC = () => {
 
       try {
         const base64 = await fileToBase64(file);
+        const mimeType = inferMimeType(file);
+        const shouldRenderPdf = isPdfFile(file);
+        const renderedPages = shouldRenderPdf ? await renderPdfToPngPages(file) : undefined;
+        const extractionInput = renderedPages && renderedPages.length > 0 ? renderedPages : base64;
         
-        // Update base64 in state for Chat usage later
-        setFiles(prev => prev.map(f => f.id === tempId ? { ...f, base64 } : f));
+        // Update file data in state for Chat usage later
+        setFiles(prev => prev.map(f => f.id === tempId ? { ...f, base64, mimeType, renderedPages } : f));
 
-        // Call Gemini for extraction with custom config
-        const data = await extractInvoiceData(base64, file.type, apiKey, baseUrl, customModel);
+        // Call configured model for extraction
+        const data = await extractInvoiceData(extractionInput, mimeType, apiKey, baseUrl, customModel);
 
         setFiles(prev => {
            // Check for duplicates based on invoice number

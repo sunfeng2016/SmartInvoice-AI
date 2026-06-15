@@ -130,11 +130,11 @@ const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
                     type="text"
                     value={baseUrl}
                     onChange={(e) => setBaseUrl(e.target.value)}
-                    placeholder="https://vip.sonetto.top"
+                    placeholder="https://your-api-host.com 或 https://your-api-host.com/v1"
                     className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none text-sm font-mono"
                   />
                   <p className="text-xs text-gray-400 mt-1">
-                    用于中转服务。<span className="text-amber-600 font-medium">系统会自动移除 URL 末尾的 "/v1"</span>。请填写根域名即可 (如 https://vip.sonetto.top)。
+                    用于 OpenAI-compatible 中转服务。可填写根域名或 /v1 地址；系统会自动补齐 /v1。
                   </p>
                 </div>
 
